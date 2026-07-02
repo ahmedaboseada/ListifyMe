@@ -313,11 +313,38 @@ export const toggle2FA = async (req, res) => {
 
 export const getMe = async (req, res) => {
     try {
-        const user = await userModel.findById(req.user.id).lean();
+        const user = await userModel.findById(req.user.id);
         if (!user) return res.status(404).json({ message: 'User Not Found' });
+
+        // Auto renew or grace period logic
+        if (user.subscriptionType === 'pro' && user.subscriptionExpiresAt) {
+            const now = new Date();
+            const expires = new Date(user.subscriptionExpiresAt);
+            if (now > expires) {
+                const gracePeriodEnd = new Date(expires.getTime() + 3 * 24 * 60 * 60 * 1000);
+                if (now > gracePeriodEnd) {
+                    if (user.paymentMethod === 'coins') {
+                        if (user.coins >= 10000) {
+                            user.coins -= 10000;
+                            user.subscriptionExpiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+                            await user.save();
+                        } else {
+                            user.subscriptionType = 'free';
+                            user.subscriptionExpiresAt = undefined;
+                            await user.save();
+                        }
+                    } else {
+                        // cash auto renew mock
+                        user.subscriptionExpiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+                        await user.save();
+                    }
+                }
+            }
+        }
 
         return res.status(200).json({ user: await publicUser(user) });
     } catch (err) {
+        console.error(err);
         return res.status(500).json({ message: 'Internal server error.' });
     }
 };
@@ -726,3 +753,46 @@ export const resendConfirmEmail = async (req, res) => {
         return res.status(500).json({ message: 'Internal server error.' });
     }
 };
+
+export const getAllUsers = async (req, res) => {
+    try {
+        const users = await userModel.find().select('firstName lastName email type adminPermissions confirmed createdAt');
+        return res.status(200).json({ users });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Internal server error.' });
+    }
+};
+
+export const updateAdminPermissions = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { type, subscriptionType, adminPermissions } = req.body;
+
+        // Retrieve current logged in user to check email
+        const currentUser = await userModel.findById(req.user.id);
+        if (!currentUser || currentUser.email !== 'ahmedabuseada22@gmail.com') {
+            return res.status(403).json({ message: 'Only the super admin (ahmedabuseada22@gmail.com) is allowed to manage admin roles and permissions.' });
+        }
+
+        const user = await userModel.findById(userId);
+        if (!user) return res.status(404).json({ message: 'User not found' });
+
+        // Enforce that the super admin's own type and permissions cannot be revoked
+        if (user.email === 'ahmedabuseada22@gmail.com') {
+            return res.status(400).json({ message: 'The super admin account cannot be demoted or have permissions modified.' });
+        }
+
+        if (type !== undefined) user.type = type;
+        if (subscriptionType !== undefined) user.subscriptionType = subscriptionType;
+        if (adminPermissions !== undefined) user.adminPermissions = adminPermissions;
+
+        await user.save();
+
+        return res.status(200).json({ message: 'Permissions updated successfully', user });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Internal server error.' });
+    }
+};
+

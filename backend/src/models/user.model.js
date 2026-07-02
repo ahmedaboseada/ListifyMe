@@ -32,10 +32,20 @@ const userSchema = new Schema(
         emailChangeTokenId: { type: String, select: false },
 
         // ListifyMe Task Manager Specific Fields
-        subscriptionType: { type: String, enum: ['free', 'pro'], default: 'free' },
+        subscriptionType: { type: String, enum: ['free', 'pro', 'lifetime'], default: 'free' },
+        subscriptionExpiresAt: { type: Date },
+        trialUsed: { type: Boolean, default: false },
+        paymentMethod: { type: String, enum: ['cash', 'coins'], default: 'cash' },
+        autoRenew: { type: Boolean, default: false },
+        gracePeriodStartedAt: { type: Date },
         coins: { type: Number, default: 0, min: 0 },
         weeklyPoints: { type: Number, default: 0, min: 0 },
         language: { type: String, default: 'en' },
+        adminPermissions: { 
+            type: [String], 
+            enum: ['manageUsers', 'manageTasks', 'manageRewards', 'manageLeaderboard', 'manageSystem'], 
+            default: [] 
+        },
 
         settings: {
             notifications: {

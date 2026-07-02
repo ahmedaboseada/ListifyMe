@@ -8,8 +8,11 @@ import mongoose from 'mongoose';
 
 import userRouter from './modules/userModel/user.controller.js';
 import taskRouter from './modules/taskModel/task.controller.js';
+import projectRouter from './modules/projectModel/project.controller.js';
+import rewardRouter from './modules/rewardModel/reward.controller.js';
 import { notFound } from './middlewares/notFound.js';
 import { errorHandler } from './middlewares/errorHandler.js';
+import { startSubscriptionCron } from './cron/subscription.cron.js';
 import { startWeeklyPointsReset, startDailyDeadlineReminders } from './utils/index.js';
 
 const app = express();
@@ -62,6 +65,10 @@ export const bootstrap = async () => {
     // Main Routes
     app.use('/users', userRouter);
     app.use('/tasks', taskRouter);
+    app.use('/projects', projectRouter);
+    app.use('/rewards', rewardRouter);
+
+
 
     // Static upload folder (if needed later)
     app.use('/uploads', express.static('uploads'));
@@ -70,7 +77,10 @@ export const bootstrap = async () => {
     app.use(notFound);
     app.use(errorHandler);
 
-    // Vercel serverless / Local port listener
+    // Start background jobs
+    startSubscriptionCron();
+
+    // Start Serverless / Local port listener
     if (!process.env.VERCEL) {
         const PORT = process.env.PORT || 8000;
         app.listen(PORT, '0.0.0.0', () => console.log(`Server is running on port ${PORT} and accessible locally`));

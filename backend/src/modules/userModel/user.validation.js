@@ -22,7 +22,7 @@ export const signupSchema = {
 
         twoFA: joi.boolean().optional(),
         fcmToken: joi.string().optional(),
-        language: joi.string().valid("en", "ar", "es", "fr").optional(),
+        language: joi.string().valid("en", "ar", "fr").optional(),
     }),
 };
 
@@ -123,3 +123,17 @@ export const updateFcmTokenSchema = {
         fcmToken: joi.string().required(),
     }),
 };
+
+export const updateAdminPermissionsSchema = {
+    params: joi.object({
+        userId: joi.string().hex().length(24).required()
+    }),
+    body: joi.object({
+        type: joi.string().valid("user", "admin").optional(),
+        subscriptionType: joi.string().valid("free", "pro", "lifetime").optional(),
+        adminPermissions: joi.array().items(
+            joi.string().valid('manageUsers', 'manageTasks', 'manageRewards', 'manageLeaderboard', 'manageSystem')
+        ).optional()
+    })
+};
+

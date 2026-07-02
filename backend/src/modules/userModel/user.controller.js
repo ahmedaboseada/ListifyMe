@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { validation } from '../../middlewares/validation.js';
 import { verifyToken } from '../../middlewares/authentication.js';
 import { restrictTo } from '../../middlewares/restrictTo.js';
+import { requirePermission } from '../../middlewares/permission.js';
 
 import * as UVS from './user.validation.js';
 import * as US from './user.service.js';
@@ -51,4 +52,9 @@ userRouter.delete('/me', US.deleteAccount);
 userRouter.get('/fcm-tokens', US.getAllFcmTokens);
 userRouter.patch('/fcm-token', validation(UVS.updateFcmTokenSchema), US.updateFcmToken);
 
+// Admin user and permission endpoints
+userRouter.get('/all-users', restrictTo(['admin']), requirePermission('manageUsers'), US.getAllUsers);
+userRouter.patch('/:userId/permissions', restrictTo(['admin']), validation(UVS.updateAdminPermissionsSchema), US.updateAdminPermissions);
+
 export default userRouter;
+

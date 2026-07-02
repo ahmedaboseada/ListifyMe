@@ -2,6 +2,11 @@ import taskModel from '../../models/task.model.js';
 import subtaskModel from '../../models/subtask.model.js';
 import userModel from '../../models/user.model.js';
 import notificationModel from '../../models/notification.model.js';
+import { categories } from '../../config/CONSTANTS.js';
+import { sendPushNotification } from '../../utils/fcm.js';
+import { getTranslation } from '../../utils/translations.js';
+import { analyzeTaskWithAI, suggestSubtasksWithAI, suggestDescriptionWithAI } from '../../utils/aiHelper.js';
+
 
 // =======================
 // TASK SERVICES
@@ -9,7 +14,7 @@ import notificationModel from '../../models/notification.model.js';
 
 export const createTask = async (req, res) => {
     try {
-        const { title, description, dueDate, priority, category, pointsReward } = req.body;
+        const { title, description, dueDate, priority, category, projectId } = req.body;
         const userId = req.user.id;
 
         const task = await taskModel.create({
@@ -17,8 +22,9 @@ export const createTask = async (req, res) => {
             description,
             dueDate,
             priority: priority || 'medium',
-            category: category || 'General',
-            pointsReward: pointsReward !== undefined ? pointsReward : 10,
+            category: category || categories.general,
+            projectId,
+            pointsReward: 25, // Lock task reward to 25
             createdBy: userId
         });
 
@@ -40,17 +46,19 @@ export const createTask = async (req, res) => {
 export const getTasks = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { priority, status, category, search } = req.query;
+        const { priority, status, category, projectId, search } = req.query;
 
         const filter = { createdBy: userId };
         if (priority) filter.priority = priority;
         if (status) filter.status = status;
         if (category) filter.category = category;
+        if (projectId) filter.projectId = projectId;
         if (search) filter.title = { $regex: search, $options: 'i' };
 
         const tasks = await taskModel.find(filter)
             .populate('subtasks')
             .sort({ dueDate: 1 });
+
 
         return res.status(200).json({ tasks });
     } catch (err) {
@@ -85,6 +93,7 @@ export const updateTask = async (req, res) => {
 
         const wasCompleted = task.status === 'completed';
         const isCompleting = updates.status === 'completed';
+        const isUncompleting = updates.status !== undefined && updates.status !== 'completed';
 
         // Apply updates
         Object.assign(task, updates);
@@ -92,17 +101,48 @@ export const updateTask = async (req, res) => {
 
         // Award points if task was completed
         if (!wasCompleted && isCompleting) {
-            const reward = task.pointsReward || 10;
-            await userModel.findByIdAndUpdate(userId, {
+            // Check for unfinished subtasks
+            const unfinishedSubtasks = await subtaskModel.countDocuments({ taskId: task._id, status: { $ne: 'completed' } });
+            if (unfinishedSubtasks > 0) {
+                return res.status(400).json({ message: 'Cannot complete task while there are unfinished subtasks' });
+            }
+
+            const reward = 25; // Always 25 for main task
+            const user = await userModel.findByIdAndUpdate(userId, {
                 $inc: { coins: reward, weeklyPoints: reward }
-            });
+            }, { new: true });
+
+            const t = getTranslation(user?.language);
+            const notifyTitle = t.taskCompletedTitle;
+            const notifyBody = t.taskCompletedBody(task.title, reward);
 
             await notificationModel.create({
-                title: 'Coins & Points Awarded!',
-                body: `You completed "${task.title}" and earned ${reward} coins!`,
+                title: notifyTitle,
+                body: notifyBody,
                 type: 'pointsEarned',
                 recipient: userId
             });
+
+            if (user && user.fcmToken) {
+                await sendPushNotification(
+                    user.fcmToken,
+                    notifyTitle,
+                    notifyBody,
+                    { taskId: task._id.toString(), coinsEarned: reward.toString() }
+                ).catch(console.error);
+            }
+        } else if (wasCompleted && isUncompleting) {
+            const reward = 25; // Always 25 for main task
+            const user = await userModel.findByIdAndUpdate(userId, {
+                $inc: { coins: -reward, weeklyPoints: -reward }
+            }, { new: true });
+
+            if (user) {
+                let saveNeeded = false;
+                if (user.coins < 0) { user.coins = 0; saveNeeded = true; }
+                if (user.weeklyPoints < 0) { user.weeklyPoints = 0; saveNeeded = true; }
+                if (saveNeeded) await user.save();
+            }
         }
 
         return res.status(200).json({ message: 'Task updated successfully', task });
@@ -139,7 +179,7 @@ export const deleteTask = async (req, res) => {
 export const createSubtask = async (req, res) => {
     try {
         const { taskId } = req.params;
-        const { title, pointsReward } = req.body;
+        const { title } = req.body;
         const userId = req.user.id;
 
         const task = await taskModel.findOne({ _id: taskId, createdBy: userId });
@@ -148,7 +188,7 @@ export const createSubtask = async (req, res) => {
         const subtask = await subtaskModel.create({
             taskId,
             title,
-            pointsReward: pointsReward !== undefined ? pointsReward : 2
+            pointsReward: 0
         });
 
         // Add subtask reference to main task
@@ -177,22 +217,61 @@ export const updateSubtaskStatus = async (req, res) => {
 
         const wasCompleted = subtask.status === 'completed';
         const isCompleting = status === 'completed';
+        const isUncompleting = status !== undefined && status !== 'completed';
 
         subtask.status = status;
+
+        if (!wasCompleted && isCompleting) {
+            const subtaskCount = await subtaskModel.countDocuments({ taskId: task._id });
+            const reward = subtaskCount >= 3 ? Math.round((15 / subtaskCount) * 10) / 10 : 0;
+            subtask.pointsReward = reward;
+        }
+
         await subtask.save();
 
         if (!wasCompleted && isCompleting) {
-            const reward = subtask.pointsReward || 2;
-            await userModel.findByIdAndUpdate(userId, {
-                $inc: { coins: reward, weeklyPoints: reward }
-            });
+            const reward = subtask.pointsReward || 0;
 
-            await notificationModel.create({
-                title: 'Coins Awarded!',
-                body: `You completed subtask "${subtask.title}" and earned ${reward} coins!`,
-                type: 'pointsEarned',
-                recipient: userId
-            });
+            if (reward > 0) {
+                const user = await userModel.findByIdAndUpdate(userId, {
+                    $inc: { coins: reward, weeklyPoints: reward }
+                }, { new: true });
+
+                const t = getTranslation(user?.language);
+                const notifyTitle = t.subtaskCompletedTitle;
+                const notifyBody = t.subtaskCompletedBody(subtask.title, reward);
+
+                await notificationModel.create({
+                    title: notifyTitle,
+                    body: notifyBody,
+                    type: 'pointsEarned',
+                    recipient: userId
+                });
+
+                if (user && user.fcmToken) {
+                    await sendPushNotification(
+                        user.fcmToken,
+                        notifyTitle,
+                        notifyBody,
+                        { subtaskId: subtask._id.toString(), coinsEarned: reward.toString() }
+                    ).catch(console.error);
+                }
+            }
+        } else if (wasCompleted && isUncompleting) {
+            const reward = subtask.pointsReward || 0;
+
+            if (reward > 0) {
+                const user = await userModel.findByIdAndUpdate(userId, {
+                    $inc: { coins: -reward, weeklyPoints: -reward }
+                }, { new: true });
+
+                if (user) {
+                    let saveNeeded = false;
+                    if (user.coins < 0) { user.coins = 0; saveNeeded = true; }
+                    if (user.weeklyPoints < 0) { user.weeklyPoints = 0; saveNeeded = true; }
+                    if (saveNeeded) await user.save();
+                }
+            }
         }
 
         return res.status(200).json({ message: 'Subtask status updated successfully', subtask });
@@ -255,26 +334,112 @@ export const getLeaderboard = async (req, res) => {
 export const upgradeSubscription = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { subscriptionType } = req.body; // 'free' or 'pro'
+        const { upgradeType, paymentMethod } = req.body; // upgradeType: 'free' | 'trial' | 'pro' | 'lifetime', paymentMethod: 'cash' | 'coins'
 
-        if (!['free', 'pro'].includes(subscriptionType)) {
-            return res.status(400).json({ message: 'Invalid subscription type' });
-        }
-
-        const user = await userModel.findByIdAndUpdate(
-            userId,
-            { subscriptionType },
-            { new: true }
-        );
-
+        const user = await userModel.findById(userId);
         if (!user) return res.status(404).json({ message: 'User not found' });
 
+        const now = new Date();
+
+        if (upgradeType === 'free') {
+            user.subscriptionType = 'free';
+            user.subscriptionExpiresAt = undefined;
+            user.autoRenew = false;
+        } else if (upgradeType === 'trial') {
+            if (user.trialUsed) {
+                return res.status(400).json({ message: 'Free trial has already been used. Please choose a paid subscription option.' });
+            }
+            user.subscriptionType = 'pro';
+            user.subscriptionExpiresAt = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000); // 7 days trial
+            user.trialUsed = true;
+            user.autoRenew = false;
+        } else if (upgradeType === 'pro') {
+            if (paymentMethod === 'coins') {
+                if (user.coins < 10000) {
+                    return res.status(400).json({ message: 'Insufficient coins! Pro plan monthly costs 10,000 coins.' });
+                }
+                user.coins -= 10000;
+            }
+            user.subscriptionType = 'pro';
+            user.subscriptionExpiresAt = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days
+            user.paymentMethod = paymentMethod || 'cash';
+            user.autoRenew = true;
+        } else if (upgradeType === 'lifetime') {
+            if (paymentMethod === 'coins') {
+                if (user.coins < 50000) {
+                    return res.status(400).json({ message: 'Insufficient coins! Pro plan lifetime costs 50,000 coins.' });
+                }
+                user.coins -= 50000;
+            }
+            user.subscriptionType = 'lifetime';
+            user.subscriptionExpiresAt = undefined; // No expiration date
+            user.paymentMethod = paymentMethod || 'cash';
+            user.autoRenew = false;
+        } else {
+            return res.status(400).json({ message: 'Invalid subscription tier selection.' });
+        }
+
+        user.gracePeriodStartedAt = undefined; // reset grace period if any
+        await user.save();
+
         return res.status(200).json({
-            message: `Subscription successfully updated to ${subscriptionType}`,
-            subscriptionType: user.subscriptionType
+            message: `Subscription successfully updated to ${user.subscriptionType}`,
+            subscriptionType: user.subscriptionType,
+            subscriptionExpiresAt: user.subscriptionExpiresAt,
+            user
         });
     } catch (err) {
         console.error(err);
         return res.status(500).json({ message: 'Internal server error' });
     }
 };
+
+// =======================
+// AI TASK HELPER
+// =======================
+
+export const analyzeTask = async (req, res) => {
+    try {
+        const { title, description, subtaskCount, dueDate } = req.body;
+
+        const analysis = await analyzeTaskWithAI(title, description, subtaskCount, dueDate);
+
+        return res.status(200).json({
+            message: 'Task analyzed successfully by AI',
+            analysis
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+export const suggestSubtasks = async (req, res) => {
+    try {
+        const { title, description } = req.body;
+        const subtasks = await suggestSubtasksWithAI(title, description);
+        return res.status(200).json({
+            message: 'Subtasks suggested successfully by AI',
+            subtasks
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+export const suggestDescription = async (req, res) => {
+    try {
+        const { title, type } = req.body;
+        const description = await suggestDescriptionWithAI(title, type);
+        return res.status(200).json({
+            message: 'Description suggested successfully by AI',
+            description
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ message: 'Internal server error' });
+    }
+};
+
+

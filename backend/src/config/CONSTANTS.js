@@ -37,3 +37,14 @@ export const notificationTypes = Object.freeze({
 export const allowedFileExtensions = Object.freeze({
     image: ['jpg', 'jpeg', 'png', 'webp'],
 });
+
+export const categories = Object.freeze({
+    general: 'general',
+    work: 'work',
+    personal: 'personal',
+    education: 'education',
+    health: 'health',
+    finance: 'finance',
+    shopping: 'shopping',
+});
+

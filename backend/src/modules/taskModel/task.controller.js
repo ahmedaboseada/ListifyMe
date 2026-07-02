@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { validation } from '../../middlewares/validation.js';
 import { verifyToken } from '../../middlewares/authentication.js';
 import { restrictTo } from '../../middlewares/restrictTo.js';
+import { checkTaskLimit } from '../../middlewares/checkTierLimits.js';
 
 import * as TVS from './task.validation.js';
 import * as TS from './task.service.js';
@@ -18,8 +19,13 @@ taskRouter.get('/leaderboard', TS.getLeaderboard);
 // Subscription Upgrade route
 taskRouter.post('/upgrade', TS.upgradeSubscription);
 
+// AI Analysis route
+taskRouter.post('/ai/analyze', validation(TVS.analyzeTaskSchema), TS.analyzeTask);
+taskRouter.post('/ai-suggest-subtasks', validation(TVS.suggestSubtasksSchema), TS.suggestSubtasks);
+taskRouter.post('/ai-suggest-description', validation(TVS.suggestDescriptionSchema), TS.suggestDescription);
+
 // Task CRUD
-taskRouter.post('/', validation(TVS.createTaskSchema), TS.createTask);
+taskRouter.post('/', validation(TVS.createTaskSchema), checkTaskLimit, TS.createTask);
 taskRouter.get('/', TS.getTasks);
 taskRouter.get('/:taskId', validation(TVS.taskIdParamSchema), TS.getTaskById);
 taskRouter.patch('/:taskId', validation(TVS.updateTaskSchema), TS.updateTask);
